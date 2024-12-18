@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "pylukeroberts"
+version = "0.1.0"
+description = ""
+authors = ["Timur Pulathaneli <timur@koeln.de>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.13,<3.14"
+bleak = "^0.22.3"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
