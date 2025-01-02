@@ -1,9 +1,10 @@
 [tool.poetry]
 name = "pylukeroberts"
 version = "0.1.0"
-description = ""
+description = "A library to control Luke Roberts lamps via Bluetooth Low Energy"
 authors = ["Timur Pulathaneli <timur@koeln.de>"]
 readme = "README.md"
+keywords = ["bluetooth","BLE", "luvo", "control", "Luke Roberts"]
 
 [tool.poetry.dependencies]
 python = ">=3.13,<3.14"

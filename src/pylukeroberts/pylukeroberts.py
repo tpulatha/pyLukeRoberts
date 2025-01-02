@@ -43,7 +43,10 @@ class LUVOLAMP:
     async def connect(self) -> bool:
         await self.client.connect()
         return True
-
+    
+    async def disconnect(self) -> bool:
+        await self.client.disconnect()
+        return True
 
     async def switch_off(self) -> bool:
         #scene 0x00 is switch off
