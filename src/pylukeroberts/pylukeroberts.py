@@ -1,67 +1,93 @@
+from __future__ import annotations
+
 import asyncio
-from bleak import BleakScanner, BleakClient
+import logging
+
 from bleak.backends.device import BLEDevice
-
-SERVICE_UUID = "44092840-0567-11E6-B862-0002A5D5C51B".lower()
-CHARACTERISTIC_UUID = "44092842-0567-11E6-B862-0002A5D5C51B".lower()
-
-CURRENTSCENE_UUID = "44092844-0567-11E6-B862-0002A5D5C51B".lower()
-
-UNKNOWNONE_UUID = "44092847-0567-11E6-B862-0002A5D5C51B".lower()
-UNKNOWNTWO_UUID = "44092848-0567-11E6-B862-0002A5D5C51B".lower()
+from bleak.backends.scanner import AdvertisementData
+from bleak import BleakScanner, BleakClient
 
 
-def print_bytearray(intro,byte_array: bytearray):
+from .const import (
+    SERVICE_UUID,
+    CHARACTERISTIC_UUID,
+    CURRENTSCENE_UUID,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+#Helper
+def print_bytearray(intro,byte_array: bytearray) -> None:
+    '''Prints a bytearray in a human readable format'''
     string = intro
     for byte in byte_array:
         string = string + f"{byte:02x},"
     print (string)
 
-def print_reply(char: str, data: bytearray):
+def print_reply(char: str, data: bytearray) -> None:
+    '''Prints the response from the lamp'''
     print_bytearray("Response from request ",data)
 
 
 async def find_lamp() -> BLEDevice:
-    def filter_function(device, advertisement_data):
-        # Check if the service UUID is in the advertisement data
+    '''Find the lamp using the service UUID'''
+    def filter_function(device:BLEDevice,advertisement_data: AdvertisementData) -> BLEDevice:
+        '''Filter function to find the lamp'''
         return SERVICE_UUID in advertisement_data.service_uuids
 
     device = await BleakScanner.find_device_by_filter(
         filter_function,
-        timeout=10.0,  # Optional timeout in seconds
     )
     return device
 
 class LUVOLAMP:
-    def __init__(self, lamp: BLEDevice):
+    def __init__(self, lamp: BLEDevice, advertisement_data: AdvertisementData | None = None
+    ) -> None:
+        '''Initialise the lamp object'''
         self._scenes = []
         self._currentScene = 0
         self._isOn = False
         self._prev_id = 0
+        self._ble_device = lamp
         self._client = BleakClient(lamp)
+        self._advertisement_data = advertisement_data
 
-    async def connect(self) -> bool:
-        await self.client.connect()
-        return True
+    def set_ble_device_and_advertisement_data(
+        self, lamp: BLEDevice, advertisement_data: AdvertisementData
+    ) -> None:
+        """Set the ble device."""
+        self._ble_device = lamp
+        self._advertisement_data = advertisement_data
+
+    async def connect(self) -> None:
+        '''Connect to the lamp'''
+        _LOGGER.debug(f"Connecting to the lamp [{self._client.address}]")
+        await self._client.connect()
     
-    async def disconnect(self) -> bool:
-        await self.client.disconnect()
-        return True
+    async def disconnect(self) -> None:
+        '''Disconnect from the lamp'''
+        _LOGGER.debug(f"Disconnecting the lamp [{self._client.address}]")
+        await self._client.disconnect()
 
-    async def switch_off(self) -> bool:
+    async def switch_off(self) -> None:
+        '''Switch off the lamp'''
+        _LOGGER.debug(f"Switching off Lamp [{self._client.address}]")
         #scene 0x00 is switch off
         await self.select_scene(0x00)
-        return True
 
-    async def switch_on(self) -> bool:
+    async def switch_on(self) -> None:
+        '''Switch on the lamp'''
+        _LOGGER.debug(f"Switching on Lamp [{self._client.address}]")
         #scene 0xFF is switch on with default scene
         await self.select_scene(0xFF)
-        return True
 
-    async def select_scene(self, scene_id: int) -> bool:
+
+    async def select_scene(self, scene_id: int) -> None:
+        '''Select a scene on the lamp'''
         try:
             await self._client.connect()
             command = bytearray([0xA0, 0x02, 0x05, scene_id])
+            _LOGGER.debug(f"Selecting scene {scene_id} [{self._client.address}]")
             await self._client.write_gatt_char(
                 char_specifier=CHARACTERISTIC_UUID, data=command, response=True
             )
@@ -71,23 +97,23 @@ class LUVOLAMP:
                 self._isOn = True
         finally:
             await self._client.disconnect()
-        return True
 
-    async def update_scenes(self) -> bool:
-        result = await self._client.connect()
+    async def update_scenes(self) -> None:
+        '''Read scenes from Lamp'''
+        await self._client.connect()
+        _LOGGER.debug(f"Read scenes from Lamp [{self._client.address}]")
         await self._client.start_notify(
             char_specifier=CHARACTERISTIC_UUID, callback=self._get_scene_names
         )
-        print(f"Connected to the lamp: {result}")
         #Defining a custom bytearray to indicate initial call to function
         command = bytearray([0x00, 0x00, 0x00, 0x00])
         try:
             await self._get_scene_names(char=CHARACTERISTIC_UUID, data=command)
         finally:
             await self._client.disconnect()
-        return True
 
-    async def _get_scene_names(self,char: str, data: bytearray):
+    async def _get_scene_names(self,char: str, data: bytearray) -> None:
+        '''Get the scene names from the lamp internal function'''
         # print (f'--> Response: {data} for {char}')
         if data[2] == 0x00:
             print("Initial query")
@@ -117,14 +143,17 @@ class LUVOLAMP:
             )
             await asyncio.sleep(1)  # Give time for async operations to complete
 
-    async def update_current_scene(self) -> bool:
+    async def update_current_scene(self) -> None:
+        '''Read the current set scene from the lamp'''
+        _LOGGER.debug(f"Read current scene from Lamp [{self._client.address}]")
         await self._client.connect()
         result = await self._client.read_gatt_char(CURRENTSCENE_UUID) 
         self._currentScene = int.from_bytes(result,byteorder='big',signed=False)
         await self._client.disconnect()
-        return True
     
     def get_current_scene(self,getID: bool = False) -> int | str:
+        '''Get the current scene ID or name from the lamp'''
+        _LOGGER.debug(f"Get current scene from Lamp [{self._client.address}]")
         if getID:
             return self._currentScene
         else:
