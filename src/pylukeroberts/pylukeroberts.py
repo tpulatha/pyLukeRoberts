@@ -92,7 +92,7 @@ class LUVOLAMP:
 
     async def stop(self):
         '''Stop the lamp -- Stub will be implemented later'''
-            pass
+        pass
 
     async def select_scene(self, scene_id: int) -> None:
         '''Select a scene on the lamp'''
