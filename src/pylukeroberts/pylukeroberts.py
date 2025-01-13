@@ -87,8 +87,12 @@ class LUVOLAMP:
 
 
     async def update(self) -> None:
-        '''Update the lamp'''
+        '''Update the lamp -- Stub will be implemented later'''
         pass
+
+    async def stop(self):
+        '''Stop the lamp -- Stub will be implemented later'''
+            pass
 
     async def select_scene(self, scene_id: int) -> None:
         '''Select a scene on the lamp'''
