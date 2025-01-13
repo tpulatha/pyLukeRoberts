@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional, Union, List, Dict
 
 import asyncio
 import logging
@@ -41,13 +42,16 @@ async def find_lamp() -> BLEDevice:
     return device
 
 class LUVOLAMP:
-    def __init__(self, lamp: BLEDevice, advertisement_data: AdvertisementData | None = None
+    def __init__(
+        self, 
+        lamp: BLEDevice, 
+        advertisement_data: Optional[AdvertisementData] = None
     ) -> None:
         '''Initialise the lamp object'''
-        self._scenes = []
-        self._currentScene = 0
-        self._isOn = False
-        self._prev_id = 0
+        self._scenes: List[Dict[str, Union[int, str]]] = []
+        self._currentScene: int = 0
+        self._isOn: bool = False
+        self._prev_id: int = 0
         self._ble_device = lamp
         self._client = BleakClient(lamp)
         self._advertisement_data = advertisement_data
