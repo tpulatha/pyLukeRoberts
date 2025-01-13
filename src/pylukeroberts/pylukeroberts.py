@@ -86,6 +86,10 @@ class LUVOLAMP:
         await self.select_scene(0xFF)
 
 
+    async def update(self) -> None:
+        '''Update the lamp'''
+        pass
+
     async def select_scene(self, scene_id: int) -> None:
         '''Select a scene on the lamp'''
         try:
