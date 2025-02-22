@@ -41,6 +41,21 @@ async def find_lamp() -> BLEDevice:
     )
     return device
 
+def hue_to_bytes(hue: float) -> bytearray:
+    if not (0 <= hue <= 360):
+        raise ValueError("Hue value must be between 0 and 360 degrees.")
+    hue_int = int((hue / 360) * 65535)
+    return as_bytes(hue_int)
+
+def as_bytes(value: int) -> bytearray:
+    return value.to_bytes(byteorder='big', length=2)
+
+def percent_as_byte(value: int) -> bytearray:
+    if not (0 <= value <= 100):
+        raise ValueError("Percentage value must be between 0 and 100.")
+    value = int((value / 100) * 255)
+    return int(value).to_bytes(byteorder='big', length=1)
+
 class LUVOLAMP:
     def __init__(
         self, 
@@ -107,6 +122,22 @@ class LUVOLAMP:
                 self._isOn = False
             else:
                 self._isOn = True
+        finally:
+            await self._client.disconnect()
+            
+    async def set_hue(self, hue: int, saturation: int, brightness: int) -> None:
+        '''Set the lamps hue'''
+        try:
+            await self._client.connect()
+            time = as_bytes(0)
+            hue_b = hue_to_bytes(hue)
+            saturation_b = percent_as_byte(saturation)
+            brightness_b= percent_as_byte(brightness)
+            command = bytearray([0xA0, 0x07, 0x02, 0x01, time[0], time[1], saturation_b[0], hue_b[0], hue_b[1], brightness_b[0]])
+            _LOGGER.debug(f"Setting hsb {hue}-{saturation}-{brightness} on [{self._client.address}]")
+            await self._client.write_gatt_char(
+                char_specifier=CHARACTERISTIC_UUID, data=command, response=True
+            )
         finally:
             await self._client.disconnect()
 
