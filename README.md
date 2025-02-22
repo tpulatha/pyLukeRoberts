@@ -19,11 +19,12 @@ This library enables control of Luke Roberts Luvo lamps via Bluetooth Low Energy
 * Read all configured scenes
 * Read current scene
 * Change scene
+* Change Color for Uplight
 
 Future Features
 * Change Brightness
 * Change Color Temperature for Downlight and Uplight
-* Change Color for Uplight
+
 
 ## Installation
 
