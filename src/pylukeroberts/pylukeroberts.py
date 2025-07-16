@@ -23,7 +23,7 @@ def print_bytearray(intro,byte_array: bytearray) -> None:
     string = intro
     for byte in byte_array:
         string = string + f"{byte:02x},"
-    print (string)
+    _LOGGER.debug(string)
 
 def print_reply(char: str, data: bytearray) -> None:
     """Prints the response from the lamp"""
@@ -58,8 +58,8 @@ def percent_as_byte(value: int) -> bytes:
 
 class LUVOLAMP:
     def __init__(
-        self, 
-        lamp: BLEDevice, 
+        self,
+        lamp: BLEDevice,
         advertisement_data: Optional[AdvertisementData] = None
     ) -> None:
         """Initialize the lamp object"""
@@ -82,7 +82,7 @@ class LUVOLAMP:
         """Connect to the lamp"""
         _LOGGER.debug(f"Connecting to the lamp [{self._client.address}]")
         await self._client.connect()
-    
+
     async def disconnect(self) -> None:
         """Disconnect from the lamp"""
         _LOGGER.debug(f"Disconnecting the lamp [{self._client.address}]")
@@ -124,7 +124,7 @@ class LUVOLAMP:
                 self._isOn = True
         finally:
             await self._client.disconnect()
-            
+
     async def set_hue(self, hue: int, saturation: int, brightness: int) -> None:
         """Set the lamps hue"""
         try:
@@ -159,7 +159,7 @@ class LUVOLAMP:
         """Get the scene names from the lamp internal function"""
         # print (f'--> Response: {data} for {char}')
         if data[2] == 0x00:
-            print("Initial query")
+            _LOGGER.debug("Initial query")
             self._prev_id = 0
             # first query
             command = bytearray([0xA0, 0x01, 0x01, 0x00])
@@ -171,12 +171,12 @@ class LUVOLAMP:
         elif data[2] == 0xFF:
             scene_name = data[3:].decode("utf-8").lstrip("\x00")
             self._scenes.append({"id": self._prev_id, "name": scene_name})
-            print(f"Returned scene id: {self._prev_id} Name: {scene_name}")
-            print("Finish")
+            _LOGGER.debug(f"Returned scene id: {self._prev_id} Name: {scene_name}")
+            _LOGGER.debug("Finish")
         else:
             scene_name = data[3:].decode("utf-8").lstrip("\x00")
             self._scenes.append({"id": self._prev_id, "name": scene_name})
-            print(f"Returned scene id: {self._prev_id} Name: {scene_name}")
+            _LOGGER.debug(f"Returned scene id: {self._prev_id} Name: {scene_name}")
             # print ("Resuming requests")
             self._prev_id = data[2]
             command = bytearray([0xA0, 0x01, 0x01, data[2]])
