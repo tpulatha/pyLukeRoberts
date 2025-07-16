@@ -1,13 +1,13 @@
 [project]
 name = "pylukeroberts"
-version = "0.2.0"
+version = "0.3.0"
 description = "A library to control Luke Roberts lamps via Bluetooth Low Energy"
 authors = [
     {name = "Timur Pulathaneli", email = "timur@koeln.de"}
 ]
 readme = "README.md"
 keywords = ["bluetooth","BLE", "luvo", "control", "Luke Roberts"]
-requires-python = ">=3.9,<3.14"
+requires-python = ">=3.10,<3.14"
 dependencies = [
 "bleak == 0.22.3"
 ]
