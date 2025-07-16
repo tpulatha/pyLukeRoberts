@@ -1,14 +1,16 @@
-[tool.poetry]
+[project]
 name = "pylukeroberts"
 version = "0.2.0"
 description = "A library to control Luke Roberts lamps via Bluetooth Low Energy"
-authors = ["Timur Pulathaneli <timur@koeln.de>"]
+authors = [
+    {name = "Timur Pulathaneli", email = "timur@koeln.de"}
+]
 readme = "README.md"
 keywords = ["bluetooth","BLE", "luvo", "control", "Luke Roberts"]
-
-[tool.poetry.dependencies]
-python = ">=3.9,<3.14"
-bleak = "^0.22.3"
+requires-python = ">=3.9,<3.14"
+dependencies = [
+"bleak == 0.22.3"
+]
 
 
 [build-system]
