@@ -216,3 +216,16 @@ class LUVOLAMP:
             char_specifier=CHARACTERISTIC_UUID, data=command, response=True
         )
         await asyncio.sleep(1)  # Give time for async operations to complete
+
+    async def set_relative_brightness(self, brightness: int) -> None:
+        '''Set the relative brightness of the lamp. Values between -100 and 100'''
+        await self._client.connect()
+
+        if not (-100 <= brightness <= 100):
+            raise ValueError("Percentage value must be between -100 and 100.")
+        command = bytearray([0xA0, 0x01, 0x08])
+        command.append(brightness.to_bytes(length=1, byteorder='big', signed=True)[0])
+        await self._client.write_gatt_char(
+            char_specifier=CHARACTERISTIC_UUID, data=command, response=True
+        )
+        await asyncio.sleep(1)  # Give time for async operations to complete
