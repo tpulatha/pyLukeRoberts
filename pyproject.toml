@@ -7,7 +7,7 @@ readme = "README.md"
 keywords = ["bluetooth","BLE", "luvo", "control", "Luke Roberts"]
 
 [tool.poetry.dependencies]
-python = ">=3.8,<4.0"
+python = ">=3.9,<3.14"
 bleak = "^0.22.3"
 
 
