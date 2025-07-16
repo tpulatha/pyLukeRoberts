@@ -19,21 +19,21 @@ _LOGGER = logging.getLogger(__name__)
 
 #Helper
 def print_bytearray(intro,byte_array: bytearray) -> None:
-    '''Prints a bytearray in a human readable format'''
+    """Prints a bytearray in a human-readable format"""
     string = intro
     for byte in byte_array:
         string = string + f"{byte:02x},"
     print (string)
 
 def print_reply(char: str, data: bytearray) -> None:
-    '''Prints the response from the lamp'''
+    """Prints the response from the lamp"""
     print_bytearray("Response from request ",data)
 
 
 async def find_lamp() -> BLEDevice:
-    '''Find the lamp using the service UUID'''
+    """Find the lamp using the service UUID"""
     def filter_function(device:BLEDevice,advertisement_data: AdvertisementData) -> BLEDevice:
-        '''Filter function to find the lamp'''
+        """Filter function to find the lamp"""
         return SERVICE_UUID in advertisement_data.service_uuids
 
     device = await BleakScanner.find_device_by_filter(
@@ -41,16 +41,16 @@ async def find_lamp() -> BLEDevice:
     )
     return device
 
-def hue_to_bytes(hue: float) -> bytearray:
+def hue_to_bytes(hue: float) -> bytes:
     if not (0 <= hue <= 360):
         raise ValueError("Hue value must be between 0 and 360 degrees.")
     hue_int = int((hue / 360) * 65535)
     return as_bytes(hue_int)
 
-def as_bytes(value: int) -> bytearray:
+def as_bytes(value: int) -> bytes:
     return value.to_bytes(byteorder='big', length=2)
 
-def percent_as_byte(value: int) -> bytearray:
+def percent_as_byte(value: int) -> bytes:
     if not (0 <= value <= 100):
         raise ValueError("Percentage value must be between 0 and 100.")
     value = int((value / 100) * 255)
@@ -62,7 +62,7 @@ class LUVOLAMP:
         lamp: BLEDevice, 
         advertisement_data: Optional[AdvertisementData] = None
     ) -> None:
-        '''Initialise the lamp object'''
+        """Initialize the lamp object"""
         self._scenes: List[Dict[str, Union[int, str]]] = []
         self._currentScene: int = 0
         self._isOn: bool = False
@@ -79,38 +79,38 @@ class LUVOLAMP:
         self._advertisement_data = advertisement_data
 
     async def connect(self) -> None:
-        '''Connect to the lamp'''
+        """Connect to the lamp"""
         _LOGGER.debug(f"Connecting to the lamp [{self._client.address}]")
         await self._client.connect()
     
     async def disconnect(self) -> None:
-        '''Disconnect from the lamp'''
+        """Disconnect from the lamp"""
         _LOGGER.debug(f"Disconnecting the lamp [{self._client.address}]")
         await self._client.disconnect()
 
     async def switch_off(self) -> None:
-        '''Switch off the lamp'''
+        """Switch off the lamp"""
         _LOGGER.debug(f"Switching off Lamp [{self._client.address}]")
         #scene 0x00 is switch off
         await self.select_scene(0x00)
 
     async def switch_on(self) -> None:
-        '''Switch on the lamp'''
+        """Switch on the lamp"""
         _LOGGER.debug(f"Switching on Lamp [{self._client.address}]")
-        #scene 0xFF is switch on with default scene
+        #scene 0xFF is switch on with the default scene
         await self.select_scene(0xFF)
 
 
     async def update(self) -> None:
-        '''Update the lamp -- Stub will be implemented later'''
+        """Update the lamp -- Stub will be implemented later"""
         pass
 
     async def stop(self):
-        '''Stop the lamp -- Stub will be implemented later'''
+        """Stop the lamp -- Stub will be implemented later"""
         pass
 
     async def select_scene(self, scene_id: int) -> None:
-        '''Select a scene on the lamp'''
+        """Select a scene on the lamp"""
         try:
             await self._client.connect()
             command = bytearray([0xA0, 0x02, 0x05, scene_id])
@@ -126,7 +126,7 @@ class LUVOLAMP:
             await self._client.disconnect()
             
     async def set_hue(self, hue: int, saturation: int, brightness: int) -> None:
-        '''Set the lamps hue'''
+        """Set the lamps hue"""
         try:
             await self._client.connect()
             time = as_bytes(0)
@@ -142,13 +142,13 @@ class LUVOLAMP:
             await self._client.disconnect()
 
     async def update_scenes(self) -> None:
-        '''Read scenes from Lamp'''
+        """Read scenes from Lamp"""
         await self._client.connect()
         _LOGGER.debug(f"Read scenes from Lamp [{self._client.address}]")
         await self._client.start_notify(
             char_specifier=CHARACTERISTIC_UUID, callback=self._get_scene_names
         )
-        #Defining a custom bytearray to indicate initial call to function
+        #Defining a custom bytearray to indicate the initial call to function
         command = bytearray([0x00, 0x00, 0x00, 0x00])
         try:
             await self._get_scene_names(char=CHARACTERISTIC_UUID, data=command)
@@ -156,7 +156,7 @@ class LUVOLAMP:
             await self._client.disconnect()
 
     async def _get_scene_names(self,char: str, data: bytearray) -> None:
-        '''Get the scene names from the lamp internal function'''
+        """Get the scene names from the lamp internal function"""
         # print (f'--> Response: {data} for {char}')
         if data[2] == 0x00:
             print("Initial query")
@@ -187,25 +187,26 @@ class LUVOLAMP:
             await asyncio.sleep(1)  # Give time for async operations to complete
 
     async def update_current_scene(self) -> None:
-        '''Read the current set scene from the lamp'''
+        """Read the current set scene from the lamp"""
         _LOGGER.debug(f"Read current scene from Lamp [{self._client.address}]")
         await self._client.connect()
         result = await self._client.read_gatt_char(CURRENTSCENE_UUID) 
         self._currentScene = int.from_bytes(result,byteorder='big',signed=False)
         await self._client.disconnect()
     
-    def get_current_scene(self,getID: bool = False) -> int | str:
-        '''Get the current scene ID or name from the lamp'''
+    def get_current_scene(self,getid: bool = False) -> int | str:
+        """Get the current scene ID or name from the lamp"""
         _LOGGER.debug(f"Get current scene from Lamp [{self._client.address}]")
-        if getID:
+        if getid:
             return self._currentScene
         else:
             for scene in self._scenes:
                 if scene['id'] == self._currentScene:
                     return scene['name']
+            raise ValueError(f"Scene ID {self._currentScene} not found in scene list.")
 
     async def set_brightness(self, brightness: int) -> None:
-        '''Set the brightness of the lamp. Values between 0 and 100'''
+        """Set the brightness of the lamp. Values between 0 and 100"""
         await self._client.connect()
 
         if not (0 <= brightness <= 100):
@@ -218,7 +219,7 @@ class LUVOLAMP:
         await asyncio.sleep(1)  # Give time for async operations to complete
 
     async def set_relative_brightness(self, brightness: int) -> None:
-        '''Set the relative brightness of the lamp. Values between -100 and 100'''
+        """Set the relative brightness of the lamp. Values between -100 and 100"""
         await self._client.connect()
 
         if not (-100 <= brightness <= 100):
