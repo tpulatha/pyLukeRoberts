@@ -4,9 +4,7 @@ from typing import Optional, Union, List, Dict
 import asyncio
 import logging
 
-from bleak.backends.device import BLEDevice
-from bleak.backends.scanner import AdvertisementData
-from bleak import BleakScanner, BleakClient
+from bleak import BleakScanner, BleakClient, BLEDevice, AdvertisementData
 
 
 from .const import (
