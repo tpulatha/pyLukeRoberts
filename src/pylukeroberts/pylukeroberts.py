@@ -1,73 +1,129 @@
 from __future__ import annotations
-from typing import Optional, Union, List, Dict
 
 import asyncio
 import logging
+from dataclasses import dataclass
 
 from bleak import BleakScanner, BleakClient, BLEDevice, AdvertisementData
-
 
 from .const import (
     SERVICE_UUID,
     CHARACTERISTIC_UUID,
     CURRENTSCENE_UUID,
+    COMMAND_PREFIX,
+    API_V1,
+    API_V2,
+    OPCODE_QUERY_SCENE,
+    OPCODE_IMMEDIATE_LIGHT,
+    OPCODE_BRIGHTNESS,
+    OPCODE_COLOR_TEMPERATURE,
+    OPCODE_SELECT_SCENE,
+    OPCODE_RELATIVE_BRIGHTNESS,
+    IMMEDIATE_LIGHT_UPLIGHT,
+    SCENE_OFF,
+    SCENE_DEFAULT,
+    SCENE_LIST_END,
+    STATUS_OK,
+    MIN_KELVIN,
+    MAX_KELVIN,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-#Helper
-def print_bytearray(intro,byte_array: bytearray) -> None:
-    """Prints a bytearray in a human-readable format"""
-    string = intro
-    for byte in byte_array:
-        string = string + f"{byte:02x},"
-    _LOGGER.debug(string)
-
-def print_reply(char: str, data: bytearray) -> None:
-    """Prints the response from the lamp"""
-    print_bytearray("Response from request ",data)
+SCENE_LIST_TIMEOUT = 30.0
 
 
-async def find_lamp() -> BLEDevice:
-    """Find the lamp using the service UUID"""
-    def filter_function(device:BLEDevice,advertisement_data: AdvertisementData) -> BLEDevice:
-        """Filter function to find the lamp"""
+@dataclass(frozen=True)
+class Scene:
+    """A light scene configured on the lamp."""
+
+    id: int
+    name: str
+
+
+async def find_lamp(timeout: float = 10.0) -> BLEDevice | None:
+    """Scan for the first lamp advertising the Luke Roberts control service.
+
+    Returns None if no lamp is found within ``timeout`` seconds.
+    """
+
+    def filter_function(
+        device: BLEDevice, advertisement_data: AdvertisementData
+    ) -> bool:
         return SERVICE_UUID in advertisement_data.service_uuids
 
-    device = await BleakScanner.find_device_by_filter(
+    return await BleakScanner.find_device_by_filter(
         filter_function,
+        timeout=timeout,
+        service_uuids=[SERVICE_UUID],
     )
-    return device
+
 
 def hue_to_bytes(hue: float) -> bytes:
-    if not (0 <= hue <= 360):
+    """Convert a hue in degrees (0-360) to the 16-bit wire format (0-65535)."""
+    if not 0 <= hue <= 360:
         raise ValueError("Hue value must be between 0 and 360 degrees.")
-    hue_int = int((hue / 360) * 65535)
-    return as_bytes(hue_int)
+    return as_bytes(int((hue / 360) * 65535))
+
 
 def as_bytes(value: int) -> bytes:
-    return value.to_bytes(byteorder='big', length=2)
+    return value.to_bytes(length=2, byteorder="big")
+
 
 def percent_as_byte(value: int) -> bytes:
-    if not (0 <= value <= 100):
+    """Scale a percentage (0-100) to a single byte (0-255)."""
+    if not 0 <= value <= 100:
         raise ValueError("Percentage value must be between 0 and 100.")
-    value = int((value / 100) * 255)
-    return int(value).to_bytes(byteorder='big', length=1)
+    return int((value / 100) * 255).to_bytes(length=1, byteorder="big")
 
-class LUVOLAMP:
+
+class LuvoLamp:
+    """Control a Luke Roberts Luvo lamp over Bluetooth Low Energy.
+
+    Lamps terminate connections after 8 seconds of inactivity, so every
+    command opens a short-lived connection and disconnects afterwards.
+    """
+
     def __init__(
         self,
         lamp: BLEDevice,
-        advertisement_data: Optional[AdvertisementData] = None
+        advertisement_data: AdvertisementData | None = None,
     ) -> None:
         """Initialize the lamp object"""
-        self._scenes: List[Dict[str, Union[int, str]]] = []
-        self._currentScene: int = 0
-        self._isOn: bool = False
-        self._prev_id: int = 0
+        self._scenes: list[Scene] = []
+        self._current_scene: int = SCENE_OFF
+        self._is_on: bool = False
         self._ble_device = lamp
         self._client = BleakClient(lamp)
         self._advertisement_data = advertisement_data
+
+    @property
+    def address(self) -> str:
+        """Bluetooth address of the lamp."""
+        return self._client.address
+
+    @property
+    def is_on(self) -> bool:
+        """Whether the lamp is on, based on the last known scene."""
+        return self._is_on
+
+    @property
+    def scenes(self) -> list[Scene]:
+        """Scenes read from the lamp by the last update_scenes() call."""
+        return list(self._scenes)
+
+    @property
+    def current_scene_id(self) -> int:
+        """Id of the current scene, as of the last update_current_scene()."""
+        return self._current_scene
+
+    @property
+    def current_scene_name(self) -> str | None:
+        """Name of the current scene, or None if it is not in the scene list."""
+        for scene in self._scenes:
+            if scene.id == self._current_scene:
+                return scene.name
+        return None
 
     def set_ble_device_and_advertisement_data(
         self, lamp: BLEDevice, advertisement_data: AdvertisementData
@@ -75,160 +131,233 @@ class LUVOLAMP:
         """Set the ble device."""
         self._ble_device = lamp
         self._advertisement_data = advertisement_data
+        if not self._client.is_connected:
+            self._client = BleakClient(lamp)
 
     async def connect(self) -> None:
         """Connect to the lamp"""
-        _LOGGER.debug(f"Connecting to the lamp [{self._client.address}]")
+        _LOGGER.debug("Connecting to the lamp [%s]", self._client.address)
         await self._client.connect()
 
     async def disconnect(self) -> None:
         """Disconnect from the lamp"""
-        _LOGGER.debug(f"Disconnecting the lamp [{self._client.address}]")
+        _LOGGER.debug("Disconnecting the lamp [%s]", self._client.address)
         await self._client.disconnect()
+
+    async def _send_command(self, command: bytes) -> None:
+        """Connect, write a command to the external API endpoint, disconnect."""
+        try:
+            await self._client.connect()
+            _LOGGER.debug(
+                "Sending %s to [%s]", command.hex(","), self._client.address
+            )
+            await self._client.write_gatt_char(
+                char_specifier=CHARACTERISTIC_UUID, data=command, response=True
+            )
+        finally:
+            await self._client.disconnect()
 
     async def switch_off(self) -> None:
         """Switch off the lamp"""
-        _LOGGER.debug(f"Switching off Lamp [{self._client.address}]")
-        #scene 0x00 is switch off
-        await self.select_scene(0x00)
+        _LOGGER.debug("Switching off Lamp [%s]", self._client.address)
+        await self.select_scene(SCENE_OFF)
 
     async def switch_on(self) -> None:
-        """Switch on the lamp"""
-        _LOGGER.debug(f"Switching on Lamp [{self._client.address}]")
-        #scene 0xFF is switch on with the default scene
-        await self.select_scene(0xFF)
-
+        """Switch on the lamp with the default scene"""
+        _LOGGER.debug("Switching on Lamp [%s]", self._client.address)
+        await self.select_scene(SCENE_DEFAULT)
 
     async def update(self) -> None:
-        """Update the lamp -- Stub will be implemented later"""
-        pass
+        """Refresh lamp state: scene list (first call only) and current scene."""
+        if not self._scenes:
+            await self.update_scenes()
+        await self.update_current_scene()
 
-    async def stop(self):
-        """Stop the lamp -- Stub will be implemented later"""
-        pass
+    async def stop(self) -> None:
+        """Disconnect from the lamp if a connection is open."""
+        if self._client.is_connected:
+            await self._client.disconnect()
 
     async def select_scene(self, scene_id: int) -> None:
         """Select a scene on the lamp"""
-        try:
-            await self._client.connect()
-            command = bytearray([0xA0, 0x02, 0x05, scene_id])
-            _LOGGER.debug(f"Selecting scene {scene_id} [{self._client.address}]")
-            await self._client.write_gatt_char(
-                char_specifier=CHARACTERISTIC_UUID, data=command, response=True
-            )
-            if scene_id == 0x00:
-                self._isOn = False
-            else:
-                self._isOn = True
-        finally:
-            await self._client.disconnect()
+        if not 0 <= scene_id <= 0xFF:
+            raise ValueError("Scene id must be between 0 and 255.")
+        _LOGGER.debug(
+            "Selecting scene %s [%s]", scene_id, self._client.address
+        )
+        await self._send_command(
+            bytes([COMMAND_PREFIX, API_V2, OPCODE_SELECT_SCENE, scene_id])
+        )
+        self._is_on = scene_id != SCENE_OFF
+        if scene_id != SCENE_DEFAULT:
+            self._current_scene = scene_id
 
-    async def set_hue(self, hue: int, saturation: int, brightness: int) -> None:
-        """Set the lamps hue"""
-        try:
-            await self._client.connect()
-            time = as_bytes(0)
-            hue_b = hue_to_bytes(hue)
-            saturation_b = percent_as_byte(saturation)
-            brightness_b= percent_as_byte(brightness)
-            command = bytearray([0xA0, 0x07, 0x02, 0x01, time[0], time[1], saturation_b[0], hue_b[0], hue_b[1], brightness_b[0]])
-            _LOGGER.debug(f"Setting hsb {hue}-{saturation}-{brightness} on [{self._client.address}]")
-            await self._client.write_gatt_char(
-                char_specifier=CHARACTERISTIC_UUID, data=command, response=True
+    async def set_hue(
+        self, hue: int, saturation: int, brightness: int, duration_ms: int = 0
+    ) -> None:
+        """Set the uplight color as HSB, optionally reverting after duration_ms.
+
+        The change modifies the current scene and is lost on power-down.
+        """
+        if not 0 <= duration_ms <= 0xFFFF:
+            raise ValueError("Duration must be between 0 and 65535 ms.")
+        duration = as_bytes(duration_ms)
+        hue_b = hue_to_bytes(hue)
+        saturation_b = percent_as_byte(saturation)
+        brightness_b = percent_as_byte(brightness)
+        _LOGGER.debug(
+            "Setting hsb %s-%s-%s on [%s]",
+            hue,
+            saturation,
+            brightness,
+            self._client.address,
+        )
+        await self._send_command(
+            bytes(
+                [
+                    COMMAND_PREFIX,
+                    API_V1,
+                    OPCODE_IMMEDIATE_LIGHT,
+                    IMMEDIATE_LIGHT_UPLIGHT,
+                    duration[0],
+                    duration[1],
+                    saturation_b[0],
+                    hue_b[0],
+                    hue_b[1],
+                    brightness_b[0],
+                ]
             )
-        finally:
-            await self._client.disconnect()
+        )
+
+    async def set_color_temperature(self, kelvin: int) -> None:
+        """Set the downlight color temperature of the current scene in Kelvin."""
+        if not MIN_KELVIN <= kelvin <= MAX_KELVIN:
+            raise ValueError(
+                f"Color temperature must be between {MIN_KELVIN} and {MAX_KELVIN} K."
+            )
+        kelvin_b = as_bytes(kelvin)
+        _LOGGER.debug(
+            "Setting color temperature %sK on [%s]", kelvin, self._client.address
+        )
+        await self._send_command(
+            bytes(
+                [
+                    COMMAND_PREFIX,
+                    API_V1,
+                    OPCODE_COLOR_TEMPERATURE,
+                    kelvin_b[0],
+                    kelvin_b[1],
+                ]
+            )
+        )
 
     async def update_scenes(self) -> None:
-        """Read scenes from Lamp"""
-        await self._client.connect()
-        _LOGGER.debug(f"Read scenes from Lamp [{self._client.address}]")
-        await self._client.start_notify(
-            char_specifier=CHARACTERISTIC_UUID, callback=self._get_scene_names
-        )
-        #Defining a custom bytearray to indicate the initial call to function
-        command = bytearray([0x00, 0x00, 0x00, 0x00])
+        """Read the list of configured scenes from the lamp.
+
+        Replaces the cached scene list available via the ``scenes`` property.
+        """
+        scenes: list[Scene] = []
+        done = asyncio.Event()
+        queried_id = SCENE_OFF
+        error: int | None = None
+
+        async def _on_scene_response(char: str, data: bytearray) -> None:
+            nonlocal queried_id, error
+            status = data[0]
+            if status != STATUS_OK:
+                error = status
+                done.set()
+                return
+            next_id = data[2]
+            name = bytes(data[3:]).decode("utf-8").rstrip("\x00")
+            scenes.append(Scene(id=queried_id, name=name))
+            _LOGGER.debug(
+                "Scene id %s name %s (next id 0x%02x)", queried_id, name, next_id
+            )
+            if next_id == SCENE_LIST_END:
+                done.set()
+                return
+            queried_id = next_id
+            await self._client.write_gatt_char(
+                char_specifier=CHARACTERISTIC_UUID,
+                data=bytes([COMMAND_PREFIX, API_V1, OPCODE_QUERY_SCENE, next_id]),
+                response=True,
+            )
+
         try:
-            await self._get_scene_names(char=CHARACTERISTIC_UUID, data=command)
+            await self._client.connect()
+            _LOGGER.debug("Read scenes from Lamp [%s]", self._client.address)
+            await self._client.start_notify(
+                char_specifier=CHARACTERISTIC_UUID, callback=_on_scene_response
+            )
+            await self._client.write_gatt_char(
+                char_specifier=CHARACTERISTIC_UUID,
+                data=bytes([COMMAND_PREFIX, API_V1, OPCODE_QUERY_SCENE, queried_id]),
+                response=True,
+            )
+            await asyncio.wait_for(done.wait(), timeout=SCENE_LIST_TIMEOUT)
         finally:
             await self._client.disconnect()
-
-    async def _get_scene_names(self,char: str, data: bytearray) -> None:
-        """Get the scene names from the lamp internal function"""
-        # print (f'--> Response: {data} for {char}')
-        if data[2] == 0x00:
-            _LOGGER.debug("Initial query")
-            self._prev_id = 0
-            # first query
-            command = bytearray([0xA0, 0x01, 0x01, 0x00])
-            # print (f'Calling next request with: {command}')
-            await self._client.write_gatt_char(
-                char_specifier=CHARACTERISTIC_UUID, data=command, response=True
+        if error is not None:
+            raise RuntimeError(
+                f"Scene query rejected by lamp with status 0x{error:02x}"
             )
-            await asyncio.sleep(1)  # Give time for async operations to complete
-        elif data[2] == 0xFF:
-            scene_name = data[3:].decode("utf-8").lstrip("\x00")
-            self._scenes.append({"id": self._prev_id, "name": scene_name})
-            _LOGGER.debug(f"Returned scene id: {self._prev_id} Name: {scene_name}")
-            _LOGGER.debug("Finish")
-        else:
-            scene_name = data[3:].decode("utf-8").lstrip("\x00")
-            self._scenes.append({"id": self._prev_id, "name": scene_name})
-            _LOGGER.debug(f"Returned scene id: {self._prev_id} Name: {scene_name}")
-            # print ("Resuming requests")
-            self._prev_id = data[2]
-            command = bytearray([0xA0, 0x01, 0x01, data[2]])
-            # print (f'Calling next request with: {command}')
-            await self._client.write_gatt_char(
-                char_specifier=CHARACTERISTIC_UUID, data=command, response=True
-            )
-            await asyncio.sleep(1)  # Give time for async operations to complete
+        self._scenes = scenes
 
     async def update_current_scene(self) -> None:
         """Read the current set scene from the lamp"""
-        _LOGGER.debug(f"Read current scene from Lamp [{self._client.address}]")
-        await self._client.connect()
-        result = await self._client.read_gatt_char(CURRENTSCENE_UUID) 
-        self._currentScene = int.from_bytes(result,byteorder='big',signed=False)
-        await self._client.disconnect()
-    
-    def get_current_scene(self,getid: bool = False) -> int | str:
-        """Get the current scene ID or name from the lamp"""
-        _LOGGER.debug(f"Get current scene from Lamp [{self._client.address}]")
+        _LOGGER.debug("Read current scene from Lamp [%s]", self._client.address)
+        try:
+            await self._client.connect()
+            result = await self._client.read_gatt_char(CURRENTSCENE_UUID)
+            self._current_scene = int.from_bytes(
+                result, byteorder="big", signed=False
+            )
+            self._is_on = self._current_scene != SCENE_OFF
+        finally:
+            await self._client.disconnect()
+
+    def get_current_scene(self, getid: bool = False) -> int | str:
+        """Get the current scene id or name.
+
+        Deprecated: use the ``current_scene_id`` and ``current_scene_name``
+        properties instead.
+        """
         if getid:
-            return self._currentScene
-        else:
-            for scene in self._scenes:
-                if scene['id'] == self._currentScene:
-                    return scene['name']
-            raise ValueError(f"Scene ID {self._currentScene} not found in scene list.")
+            return self._current_scene
+        name = self.current_scene_name
+        if name is None:
+            raise ValueError(
+                f"Scene ID {self._current_scene} not found in scene list."
+            )
+        return name
 
     async def set_brightness(self, brightness: int) -> None:
-        """Set the brightness of the lamp. Values between 0 and 100"""
-        await self._client.connect()
-
-        if not (0 <= brightness <= 100):
+        """Set the brightness of the current scene in percent (0-100)."""
+        if not 0 <= brightness <= 100:
             raise ValueError("Percentage value must be between 0 and 100.")
-        brightness = int((brightness / 100) * 127)
-        command = bytearray([0xA0, 0x01, 0x03, brightness])
-        try:
-            await self._client.write_gatt_char(
-                char_specifier=CHARACTERISTIC_UUID, data=command, response=True
-            )
-        finally:
-            await self._client.disconnect()
+        _LOGGER.debug(
+            "Setting brightness %s%% on [%s]", brightness, self._client.address
+        )
+        await self._send_command(
+            bytes([COMMAND_PREFIX, API_V1, OPCODE_BRIGHTNESS, brightness])
+        )
 
     async def set_relative_brightness(self, brightness: int) -> None:
-        """Set the relative brightness of the lamp. Values between -100 and 100"""
-        await self._client.connect()
+        """Adjust the brightness of the current scene by a relative percentage.
 
-        if not (-100 <= brightness <= 100):
+        Values between -100 and 100; the lamp clamps the result to 0-100%.
+        """
+        if not -100 <= brightness <= 100:
             raise ValueError("Percentage value must be between -100 and 100.")
-        command = bytearray([0xA0, 0x01, 0x08])
-        command.append(brightness.to_bytes(length=1, byteorder='big', signed=True)[0])
-        try:
-            await self._client.write_gatt_char(
-                char_specifier=CHARACTERISTIC_UUID, data=command, response=True
-            )
-        finally:
-            await self._client.disconnect()
+        _LOGGER.debug(
+            "Adjusting brightness by %s%% on [%s]", brightness, self._client.address
+        )
+        await self._send_command(
+            bytes([COMMAND_PREFIX, API_V2, OPCODE_RELATIVE_BRIGHTNESS])
+            + brightness.to_bytes(length=1, byteorder="big", signed=True)
+        )
+
+
+# Backwards-compatible alias for the pre-0.5.0 class name.
+LUVOLAMP = LuvoLamp

@@ -20,10 +20,8 @@ This library enables control of Luke Roberts Luvo lamps via Bluetooth Low Energy
 * Read current scene
 * Change scene
 * Change Color for Uplight
-
-Future Features
-* Change Brightness
-* Change Color Temperature for Downlight and Uplight
+* Change Brightness (absolute and relative)
+* Change Color Temperature for Downlight
 
 
 ## Installation
@@ -40,20 +38,22 @@ pyLukeRoberts uses bleak for Bluetooth Low Energy connectivity
 
 ## Usage
 
-Example from `examples/set_scene.py`
+Example from `examples/switch_scene.py`
 
 ```python
-from pylukeroberts import LUVOLAMP, find_lamp
+from pylukeroberts import LuvoLamp, find_lamp
 import asyncio
 
 async def main():
-    # try:
-    lamp_address = await find_lamp()
-    print(f"Found Luke Roberts Lamp at address: {lamp_address}")
-    lamp = LUVOLAMP(lamp_address)
+    device = await find_lamp()
+    if device is None:
+        print("No Luke Roberts lamp found")
+        return
+    print(f"Found Luke Roberts Lamp at address: {device.address}")
+    lamp = LuvoLamp(device)
     await lamp.update_scenes()
     await lamp.update_current_scene()
-    print (f'{lamp.get_current_scene()} with ID: {lamp.get_current_scene(True)}')
+    print(f"{lamp.current_scene_name} with ID: {lamp.current_scene_id}")
     await lamp.select_scene(12)
     await lamp.switch_off()
 
@@ -74,7 +74,7 @@ Guidelines for contributing to the project.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE.txt) file for details.
 
 ## Contact
 

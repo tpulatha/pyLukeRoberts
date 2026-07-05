@@ -1,17 +1,42 @@
 [project]
 name = "pylukeroberts"
-version = "0.3.0"
+version = "0.5.0"
 description = "A library to control Luke Roberts lamps via Bluetooth Low Energy"
 authors = [
     {name = "Timur Pulathaneli", email = "timur@koeln.de"}
 ]
+license = "MIT"
 readme = "README.md"
-keywords = ["bluetooth","BLE", "luvo", "control", "Luke Roberts"]
+keywords = ["bluetooth", "BLE", "luvo", "control", "Luke Roberts"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Home Automation",
+    "Framework :: AsyncIO",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
 requires-python = ">=3.10,<3.14"
 dependencies = [
     "bleak>=2.1.1"
 ]
 
+[project.urls]
+Homepage = "https://github.com/tpulatha/pylukeroberts"
+Repository = "https://github.com/tpulatha/pylukeroberts"
+Issues = "https://github.com/tpulatha/pylukeroberts/issues"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3"
+pytest-asyncio = "^0.25"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
 
 [build-system]
 requires = ["poetry-core"]
