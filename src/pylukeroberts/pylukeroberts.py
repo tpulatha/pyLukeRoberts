@@ -4,7 +4,8 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
-from bleak import BleakScanner, BleakClient, BLEDevice, AdvertisementData
+from bleak import BleakScanner, BLEDevice, AdvertisementData
+from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 
 from .const import (
     SERVICE_UUID,
@@ -31,6 +32,10 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 SCENE_LIST_TIMEOUT = 30.0
+
+# Lamps terminate connections after 8 seconds of inactivity, so disconnect
+# just before they do rather than paying the reconnect cost per command.
+DISCONNECT_DELAY = 6.0
 
 
 @dataclass(frozen=True)
@@ -80,8 +85,10 @@ def percent_as_byte(value: int) -> bytes:
 class LuvoLamp:
     """Control a Luke Roberts Luvo lamp over Bluetooth Low Energy.
 
-    Lamps terminate connections after 8 seconds of inactivity, so every
-    command opens a short-lived connection and disconnects afterwards.
+    Connections are established on demand with bleak-retry-connector and kept
+    open for ``DISCONNECT_DELAY`` seconds after the last command, so bursts of
+    commands reuse one connection. The lamp itself drops idle connections
+    after 8 seconds.
     """
 
     def __init__(
@@ -94,13 +101,27 @@ class LuvoLamp:
         self._current_scene: int = SCENE_OFF
         self._is_on: bool = False
         self._ble_device = lamp
-        self._client = BleakClient(lamp)
         self._advertisement_data = advertisement_data
+        self._client: BleakClientWithServiceCache | None = None
+        self._connect_lock = asyncio.Lock()
+        self._disconnect_timer: asyncio.TimerHandle | None = None
+        self._disconnect_task: asyncio.Task[None] | None = None
+        self._expected_disconnect = False
 
     @property
     def address(self) -> str:
         """Bluetooth address of the lamp."""
-        return self._client.address
+        return self._ble_device.address
+
+    @property
+    def name(self) -> str:
+        """Name of the lamp, falling back to its address."""
+        return self._ble_device.name or self._ble_device.address
+
+    @property
+    def is_connected(self) -> bool:
+        """Whether a BLE connection to the lamp is currently open."""
+        return self._client is not None and self._client.is_connected
 
     @property
     def is_on(self) -> bool:
@@ -131,40 +152,96 @@ class LuvoLamp:
         """Set the ble device."""
         self._ble_device = lamp
         self._advertisement_data = advertisement_data
-        if not self._client.is_connected:
-            self._client = BleakClient(lamp)
 
     async def connect(self) -> None:
-        """Connect to the lamp"""
-        _LOGGER.debug("Connecting to the lamp [%s]", self._client.address)
-        await self._client.connect()
+        """Connect to the lamp.
+
+        The connection closes automatically after DISCONNECT_DELAY seconds
+        of inactivity.
+        """
+        await self._ensure_connected()
+
+    async def _ensure_connected(self) -> BleakClientWithServiceCache:
+        """Return an open connection, establishing one if necessary."""
+        async with self._connect_lock:
+            if self._client is not None and self._client.is_connected:
+                self._reset_disconnect_timer()
+                return self._client
+            _LOGGER.debug("Connecting to the lamp [%s]", self.address)
+            self._expected_disconnect = False
+            client = await establish_connection(
+                BleakClientWithServiceCache,
+                self._ble_device,
+                self.name,
+                disconnected_callback=self._handle_disconnect,
+            )
+            self._client = client
+            self._reset_disconnect_timer()
+            return client
+
+    def _reset_disconnect_timer(self) -> None:
+        """Restart the idle-disconnect countdown."""
+        if self._disconnect_timer is not None:
+            self._disconnect_timer.cancel()
+        loop = asyncio.get_running_loop()
+        self._disconnect_timer = loop.call_later(
+            DISCONNECT_DELAY, self._on_idle_timeout
+        )
+
+    def _on_idle_timeout(self) -> None:
+        self._disconnect_timer = None
+        _LOGGER.debug("Idle timeout, disconnecting the lamp [%s]", self.address)
+        self._disconnect_task = asyncio.create_task(self.disconnect())
+
+    def _handle_disconnect(self, client: BleakClientWithServiceCache) -> None:
+        """Bleak calls this when the connection drops, from either side."""
+        if client is not self._client:
+            return
+        if not self._expected_disconnect:
+            _LOGGER.debug("Lamp [%s] disconnected", self.address)
+        if self._disconnect_timer is not None:
+            self._disconnect_timer.cancel()
+            self._disconnect_timer = None
+        self._client = None
 
     async def disconnect(self) -> None:
         """Disconnect from the lamp"""
-        _LOGGER.debug("Disconnecting the lamp [%s]", self._client.address)
-        await self._client.disconnect()
+        async with self._connect_lock:
+            if self._disconnect_timer is not None:
+                self._disconnect_timer.cancel()
+                self._disconnect_timer = None
+            client = self._client
+            self._client = None
+            if client is not None and client.is_connected:
+                self._expected_disconnect = True
+                _LOGGER.debug("Disconnecting the lamp [%s]", self.address)
+                await client.disconnect()
+
+    async def stop(self) -> None:
+        """Disconnect from the lamp if a connection is open."""
+        await self.disconnect()
 
     async def _send_command(self, command: bytes) -> None:
-        """Connect, write a command to the external API endpoint, disconnect."""
+        """Write a command to the external API endpoint."""
+        client = await self._ensure_connected()
         try:
-            await self._client.connect()
-            _LOGGER.debug(
-                "Sending %s to [%s]", command.hex(","), self._client.address
-            )
-            await self._client.write_gatt_char(
+            _LOGGER.debug("Sending %s to [%s]", command.hex(","), self.address)
+            await client.write_gatt_char(
                 char_specifier=CHARACTERISTIC_UUID, data=command, response=True
             )
-        finally:
-            await self._client.disconnect()
+        except BaseException:
+            await self.disconnect()
+            raise
+        self._reset_disconnect_timer()
 
     async def switch_off(self) -> None:
         """Switch off the lamp"""
-        _LOGGER.debug("Switching off Lamp [%s]", self._client.address)
+        _LOGGER.debug("Switching off Lamp [%s]", self.address)
         await self.select_scene(SCENE_OFF)
 
     async def switch_on(self) -> None:
         """Switch on the lamp with the default scene"""
-        _LOGGER.debug("Switching on Lamp [%s]", self._client.address)
+        _LOGGER.debug("Switching on Lamp [%s]", self.address)
         await self.select_scene(SCENE_DEFAULT)
 
     async def update(self) -> None:
@@ -173,18 +250,11 @@ class LuvoLamp:
             await self.update_scenes()
         await self.update_current_scene()
 
-    async def stop(self) -> None:
-        """Disconnect from the lamp if a connection is open."""
-        if self._client.is_connected:
-            await self._client.disconnect()
-
     async def select_scene(self, scene_id: int) -> None:
         """Select a scene on the lamp"""
         if not 0 <= scene_id <= 0xFF:
             raise ValueError("Scene id must be between 0 and 255.")
-        _LOGGER.debug(
-            "Selecting scene %s [%s]", scene_id, self._client.address
-        )
+        _LOGGER.debug("Selecting scene %s [%s]", scene_id, self.address)
         await self._send_command(
             bytes([COMMAND_PREFIX, API_V2, OPCODE_SELECT_SCENE, scene_id])
         )
@@ -210,7 +280,7 @@ class LuvoLamp:
             hue,
             saturation,
             brightness,
-            self._client.address,
+            self.address,
         )
         await self._send_command(
             bytes(
@@ -236,9 +306,7 @@ class LuvoLamp:
                 f"Color temperature must be between {MIN_KELVIN} and {MAX_KELVIN} K."
             )
         kelvin_b = as_bytes(kelvin)
-        _LOGGER.debug(
-            "Setting color temperature %sK on [%s]", kelvin, self._client.address
-        )
+        _LOGGER.debug("Setting color temperature %sK on [%s]", kelvin, self.address)
         await self._send_command(
             bytes(
                 [
@@ -261,6 +329,8 @@ class LuvoLamp:
         queried_id = SCENE_OFF
         error: int | None = None
 
+        client = await self._ensure_connected()
+
         async def _on_scene_response(char: str, data: bytearray) -> None:
             nonlocal queried_id, error
             status = data[0]
@@ -278,26 +348,28 @@ class LuvoLamp:
                 done.set()
                 return
             queried_id = next_id
-            await self._client.write_gatt_char(
+            await client.write_gatt_char(
                 char_specifier=CHARACTERISTIC_UUID,
                 data=bytes([COMMAND_PREFIX, API_V1, OPCODE_QUERY_SCENE, next_id]),
                 response=True,
             )
 
         try:
-            await self._client.connect()
-            _LOGGER.debug("Read scenes from Lamp [%s]", self._client.address)
-            await self._client.start_notify(
+            _LOGGER.debug("Read scenes from Lamp [%s]", self.address)
+            await client.start_notify(
                 char_specifier=CHARACTERISTIC_UUID, callback=_on_scene_response
             )
-            await self._client.write_gatt_char(
+            await client.write_gatt_char(
                 char_specifier=CHARACTERISTIC_UUID,
                 data=bytes([COMMAND_PREFIX, API_V1, OPCODE_QUERY_SCENE, queried_id]),
                 response=True,
             )
             await asyncio.wait_for(done.wait(), timeout=SCENE_LIST_TIMEOUT)
-        finally:
-            await self._client.disconnect()
+            await client.stop_notify(CHARACTERISTIC_UUID)
+        except BaseException:
+            await self.disconnect()
+            raise
+        self._reset_disconnect_timer()
         if error is not None:
             raise RuntimeError(
                 f"Scene query rejected by lamp with status 0x{error:02x}"
@@ -306,16 +378,16 @@ class LuvoLamp:
 
     async def update_current_scene(self) -> None:
         """Read the current set scene from the lamp"""
-        _LOGGER.debug("Read current scene from Lamp [%s]", self._client.address)
+        client = await self._ensure_connected()
+        _LOGGER.debug("Read current scene from Lamp [%s]", self.address)
         try:
-            await self._client.connect()
-            result = await self._client.read_gatt_char(CURRENTSCENE_UUID)
-            self._current_scene = int.from_bytes(
-                result, byteorder="big", signed=False
-            )
-            self._is_on = self._current_scene != SCENE_OFF
-        finally:
-            await self._client.disconnect()
+            result = await client.read_gatt_char(CURRENTSCENE_UUID)
+        except BaseException:
+            await self.disconnect()
+            raise
+        self._reset_disconnect_timer()
+        self._current_scene = int.from_bytes(result, byteorder="big", signed=False)
+        self._is_on = self._current_scene != SCENE_OFF
 
     def get_current_scene(self, getid: bool = False) -> int | str:
         """Get the current scene id or name.
@@ -336,9 +408,7 @@ class LuvoLamp:
         """Set the brightness of the current scene in percent (0-100)."""
         if not 0 <= brightness <= 100:
             raise ValueError("Percentage value must be between 0 and 100.")
-        _LOGGER.debug(
-            "Setting brightness %s%% on [%s]", brightness, self._client.address
-        )
+        _LOGGER.debug("Setting brightness %s%% on [%s]", brightness, self.address)
         await self._send_command(
             bytes([COMMAND_PREFIX, API_V1, OPCODE_BRIGHTNESS, brightness])
         )
@@ -351,7 +421,7 @@ class LuvoLamp:
         if not -100 <= brightness <= 100:
             raise ValueError("Percentage value must be between -100 and 100.")
         _LOGGER.debug(
-            "Adjusting brightness by %s%% on [%s]", brightness, self._client.address
+            "Adjusting brightness by %s%% on [%s]", brightness, self.address
         )
         await self._send_command(
             bytes([COMMAND_PREFIX, API_V2, OPCODE_RELATIVE_BRIGHTNESS])
