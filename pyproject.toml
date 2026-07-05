@@ -1,6 +1,6 @@
 [project]
 name = "pylukeroberts"
-version = "0.6.1"
+version = "0.7.0"
 description = "A library to control Luke Roberts lamps via Bluetooth Low Energy"
 authors = [
     {name = "Timur Pulathaneli", email = "timur@koeln.de"}

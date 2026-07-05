@@ -343,3 +343,29 @@ async def test_idle_disconnect_swallows_transport_errors(lamp, client):
     # must not raise and must not leave an unretrieved task exception
     await lamp._idle_disconnect()
     client.disconnect.assert_awaited_once()
+
+
+async def test_set_downlight(lamp, client):
+    await lamp.set_downlight(kelvin=3000, brightness=50)
+    # 02 Immediate Light, downlight packet: A0 01 02 02 DD DD KK KK BB
+    # kelvin 3000 = 0x0BB8, brightness 50% -> 127 = 0x7F, duration 0
+    assert written_commands(client) == [
+        bytes([0xA0, 0x01, 0x02, 0x02, 0x00, 0x00, 0x0B, 0xB8, 0x7F])
+    ]
+
+
+async def test_set_downlight_duration(lamp, client):
+    await lamp.set_downlight(kelvin=2700, brightness=100, duration_ms=1000)
+    assert written_commands(client) == [
+        bytes([0xA0, 0x01, 0x02, 0x02, 0x03, 0xE8, 0x0A, 0x8C, 0xFF])
+    ]
+
+
+async def test_set_downlight_invalid_does_not_connect(lamp):
+    with pytest.raises(ValueError):
+        await lamp.set_downlight(kelvin=5000, brightness=50)
+    with pytest.raises(ValueError):
+        await lamp.set_downlight(kelvin=3000, brightness=101)
+    with pytest.raises(ValueError):
+        await lamp.set_downlight(kelvin=3000, brightness=50, duration_ms=70000)
+    lamp.establish_mock.assert_not_awaited()

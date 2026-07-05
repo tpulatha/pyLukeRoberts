@@ -21,6 +21,7 @@ from .const import (
     OPCODE_SELECT_SCENE,
     OPCODE_RELATIVE_BRIGHTNESS,
     IMMEDIATE_LIGHT_UPLIGHT,
+    IMMEDIATE_LIGHT_DOWNLIGHT,
     SCENE_OFF,
     SCENE_DEFAULT,
     SCENE_LIST_END,
@@ -303,6 +304,46 @@ class LuvoLamp:
                     saturation_b[0],
                     hue_b[0],
                     hue_b[1],
+                    brightness_b[0],
+                ]
+            )
+        )
+
+    async def set_downlight(
+        self, kelvin: int, brightness: int, duration_ms: int = 0
+    ) -> None:
+        """Set the downlight color temperature and brightness independently.
+
+        Unlike set_brightness(), which dims the whole scene, this only affects
+        the downlight. The change modifies the current scene and is lost on
+        power-down, optionally reverting after duration_ms.
+        """
+        if not MIN_KELVIN <= kelvin <= MAX_KELVIN:
+            raise ValueError(
+                f"Color temperature must be between {MIN_KELVIN} and {MAX_KELVIN} K."
+            )
+        if not 0 <= duration_ms <= 0xFFFF:
+            raise ValueError("Duration must be between 0 and 65535 ms.")
+        duration = as_bytes(duration_ms)
+        kelvin_b = as_bytes(kelvin)
+        brightness_b = percent_as_byte(brightness)
+        _LOGGER.debug(
+            "Setting downlight %sK at %s%% on [%s]",
+            kelvin,
+            brightness,
+            self.address,
+        )
+        await self._send_command(
+            bytes(
+                [
+                    COMMAND_PREFIX,
+                    API_V1,
+                    OPCODE_IMMEDIATE_LIGHT,
+                    IMMEDIATE_LIGHT_DOWNLIGHT,
+                    duration[0],
+                    duration[1],
+                    kelvin_b[0],
+                    kelvin_b[1],
                     brightness_b[0],
                 ]
             )
