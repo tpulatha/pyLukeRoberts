@@ -335,3 +335,11 @@ async def test_find_lamp_returns_none_when_not_found():
     ) as finder:
         assert await find_lamp(timeout=5.0) is None
     assert finder.call_args.kwargs["timeout"] == 5.0
+
+
+async def test_idle_disconnect_swallows_transport_errors(lamp, client):
+    await lamp.set_brightness(10)
+    client.disconnect.side_effect = OSError("dbus went away")
+    # must not raise and must not leave an unretrieved task exception
+    await lamp._idle_disconnect()
+    client.disconnect.assert_awaited_once()

@@ -191,7 +191,16 @@ class LuvoLamp:
     def _on_idle_timeout(self) -> None:
         self._disconnect_timer = None
         _LOGGER.debug("Idle timeout, disconnecting the lamp [%s]", self.address)
-        self._disconnect_task = asyncio.create_task(self.disconnect())
+        self._disconnect_task = asyncio.create_task(self._idle_disconnect())
+
+    async def _idle_disconnect(self) -> None:
+        """Disconnect after the idle timeout, swallowing transport errors."""
+        try:
+            await self.disconnect()
+        except Exception:
+            _LOGGER.debug(
+                "Error disconnecting idle lamp [%s]", self.address, exc_info=True
+            )
 
     def _handle_disconnect(self, client: BleakClientWithServiceCache) -> None:
         """Bleak calls this when the connection drops, from either side."""
